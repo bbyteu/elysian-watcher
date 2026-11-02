@@ -1,36 +1,16 @@
-# GitHub Actions 工作流：定时监控 Discord 邀请码状态
-# ===================================================
-# 这个工作流用来定时运行 check_invite.py，检查邀请码状态，
-# 并在状态发生变化时通过 Server酱推送微信通知。
-#
-# 关于「检查频率」的重要说明：
-#   GitHub 的定时任务（schedule）并不保证准时——平台繁忙时会延迟甚至
-#   直接丢弃部分运行，实际可能一两个小时才触发一次。为了不受它影响，
-#   我们让每一次被唤醒的运行，在同一个 job 里「长时间持续循环检查」（默认
-#   每 10 分钟一次、共 33 次，约持续 5.5 小时）。再配合下面的并发排队：一轮
-#   还没结束，下一轮就排队等待、结束后立刻接力，从而实现近乎 7×24 不间断的
-#   10 分钟检查，几乎不再受 GitHub 调度稀疏的影响。
-#   （本仓库是公开仓库，GitHub Actions 运行时长完全免费，可放心这样用。
-#     注意：GitHub 单个 job 最长 6 小时，所以循环时长要留出余量，不要超过。）
+
+# GitHub Actions：Discord 邀请监控 + Gmail 邮件通知
 
 name: Check Discord Invite
 
-# 触发条件
 on:
-  # 1) 定时触发：尽量每 10 分钟唤醒一次（实际由 GitHub 调度，可能延迟）。
   schedule:
     - cron: "*/10 * * * *"
-
-  # 2) 手动触发：在 GitHub 网页的 Actions 页面可以点按钮手动运行，方便测试。
   workflow_dispatch:
 
-# 给工作流写权限，这样它才能把更新后的 state.json 提交回仓库。
 permissions:
   contents: write
 
-# 并发控制：同一时间只允许一个运行。新唤醒的运行会排队等待，
-# 等当前这一轮（约 5.5 小时的循环）结束后立刻接力开始，从而前后衔接、不重叠，
-# 也避免多个运行同时提交 state.json 产生冲突。
 concurrency:
   group: invite-check
   cancel-in-progress: false
@@ -38,71 +18,59 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
-
-    # 一个 job 最多允许运行多久（分钟）。设为 350 分钟（5小时50分），
-    # 低于 GitHub 的 6 小时硬上限，留出余量防止被强制中断。
     timeout-minutes: 350
 
-    # 环境变量：可在这里调整检查节奏。
     env:
-      # 每次唤醒在一个 job 里检查多少次。
-      # 33 次 × 间隔 10 分钟 ≈ 5.5 小时；配合并发排队实现近乎不间断检查。
       CHECKS_PER_RUN: 33
-      # 每两次检查之间间隔多少秒（600 秒 = 10 分钟）。
       CHECK_INTERVAL_SECONDS: 600
 
     steps:
-      # 第 1 步：把仓库代码拉取到运行环境里。
-      - name: 检出代码 (Checkout)
+      - name: 检出代码
         uses: actions/checkout@v4
 
-      # 第 2 步：安装 Python 环境。
       - name: 安装 Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      # 第 3 步：安装依赖（requests 库）。
       - name: 安装依赖
         run: pip install -r requirements.txt
 
-      # 第 4 步：在一个 job 里循环检查多次。
-      #    每检查一次，就把有变化的 state.json 提交回仓库（实现跨运行记忆），
-      #    然后等待 10 分钟再检查下一次；最后一次检查后不再等待，直接结束。
       - name: 循环检查邀请码
         env:
-          SERVERCHAN_SENDKEY: ${{ secrets.SERVERCHAN_SENDKEY }}
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          GMAIL_TO: ${{ secrets.GMAIL_TO }}
         run: |
-          # 配置一个用于提交的机器人身份。
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # 把「检查 + 提交状态」封装成一个函数，循环里反复调用。
           run_one_check() {
             echo "::group::第 $1 / ${CHECKS_PER_RUN} 次检查"
             python check_invite.py
 
-            # 只有当 state.json 确实变化时才提交，避免空提交。
             if ! git diff --quiet state.json; then
               git add state.json
-              git commit -m "chore: 更新邀请码监控状态 [skip ci]"
-              # 推送前先 rebase 拉取远端最新，避免与其它提交冲突；失败则重试几次。
+              git commit -m "chore: update invite monitor state [skip ci]"
+
               for attempt in 1 2 3 4; do
-                git pull --rebase origin main && git push origin HEAD:main && break
+                if git pull --rebase origin main && git push origin HEAD:main; then
+                  break
+                fi
+
                 echo "推送失败，第 ${attempt} 次重试..."
                 sleep $((attempt * 2))
               done
             else
               echo "状态没有变化，无需提交。"
             fi
+
             echo "::endgroup::"
           }
 
-          # 主循环：连续检查 CHECKS_PER_RUN 次。
           for i in $(seq 1 "${CHECKS_PER_RUN}"); do
             run_one_check "$i"
 
-            # 除最后一次外，每次检查后等待 CHECK_INTERVAL_SECONDS 秒。
             if [ "$i" -lt "${CHECKS_PER_RUN}" ]; then
               echo "等待 ${CHECK_INTERVAL_SECONDS} 秒后进行下一次检查..."
               sleep "${CHECK_INTERVAL_SECONDS}"
