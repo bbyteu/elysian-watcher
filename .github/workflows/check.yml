@@ -18,7 +18,7 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 350
+    environment: GMAIL_ADDRESS
 
     env:
       CHECKS_PER_RUN: 33
