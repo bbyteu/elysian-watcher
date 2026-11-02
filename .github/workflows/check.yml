@@ -19,7 +19,7 @@ jobs:
     timeout-minutes: 350
 
     env:
-      CHECKS_PER_RUN: 1
+      CHECKS_PER_RUN: 33
       CHECK_INTERVAL_SECONDS: 600
 
     steps:
@@ -42,8 +42,7 @@ jobs:
           GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           GMAIL_TO: ${{ secrets.GMAIL_TO }}
-          TEST_EMAIL: "true"
-
+          
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
